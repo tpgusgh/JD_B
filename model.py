@@ -8,3 +8,4 @@ class Order(BaseModel):
     green_tea: str
     name: str
     room: str
+    status: str = "배달준비중"
