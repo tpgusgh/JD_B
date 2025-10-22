@@ -1,7 +1,14 @@
-import configparser
+import os
+from dotenv import load_dotenv
 
-config = configparser.ConfigParser()
-config.read("default.conf")
+# .env 파일 불러오기
+load_dotenv()
 
-SERIAL_PORT = config["serial"]["port"]
-BAUDRATE = int(config["serial"]["baud_rate"])
+# 환경변수에서 MySQL 설정 불러오기
+MYSQL_CONFIG = {
+    "host": os.getenv("MYSQL_HOST"),
+    "port": int(os.getenv("MYSQL_PORT", 3306)),
+    "user": os.getenv("MYSQL_USER"),
+    "password": os.getenv("MYSQL_PASSWORD"),
+    "db": os.getenv("MYSQL_DB"),
+}
