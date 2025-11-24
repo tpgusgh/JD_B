@@ -11,4 +11,7 @@ MYSQL_CONFIG = {
     "user": os.getenv("MYSQL_USER"),
     "password": os.getenv("MYSQL_PASSWORD"),
     "db": os.getenv("MYSQL_DB"),
+    "charset": "utf8mb4",
+    "autocommit": True,
+    "maxsize": 10
 }

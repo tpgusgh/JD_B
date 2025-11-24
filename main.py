@@ -1,15 +1,21 @@
+# serial_app.py
+
 import os
 import aiomysql
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from model import Order
 from config import MYSQL_CONFIG
-
+import json
+import ssl
+import threading
+import paho.mqtt.client as mqtt
 
 # ======================
 # 기본 설정
@@ -21,9 +27,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+
+
+# MQTT 설정
+MQTT_BROKER = "mqtt-web.mieung.kr"
+MQTT_PORT = 443
+MQTT_TOPIC_ROOMS = "echo/save"
+
 app = FastAPI()
 db_pool = None
-
+# MQTT Rooms 저장소
+mqtt_client = None
+rooms_storage: list[str] = []
+pi_statuses = {}
 
 # ======================
 # CORS 설정
@@ -46,14 +62,23 @@ async def startup_event():
     db_pool = await aiomysql.create_pool(**MYSQL_CONFIG)
     print("[Startup] MySQL pool created.")
 
+    # MQTT 클라이언트 백그라운드 스레드로 실행
+    mqtt_thread = threading.Thread(target=start_mqtt_client, daemon=True)
+    mqtt_thread.start()
+    print("[Startup] MQTT client thread started.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global db_pool
+    global db_pool, mqtt_client
     if db_pool:
         db_pool.close()
         await db_pool.wait_closed()
         print("[Shutdown] MySQL pool closed.")
+
+    if mqtt_client:
+        print("[Shutdown] MQTT client disconnecting...")
+        mqtt_client.disconnect()
 
 
 # ======================
@@ -311,3 +336,80 @@ async def update_order_status(order_id: str, new_status: str):
                 "order_id": order_id,
                 "new_status": new_status,
             }
+# ====================
+#라파 ip 받기
+@app.post("/pi-boot")
+async def pi_boot(request: Request):
+    data = await request.json()
+    pi_id = data.get("pi_id")
+    ip = data.get("ip")
+    status = data.get("status")
+
+    if not pi_id or not ip or not status:
+        return JSONResponse({"error": "Missing fields"}, status_code=400)
+
+    pi_statuses[pi_id] = {"ip": ip, "status": status}
+    print(f"[BOOT] Pi ID: {pi_id}, IP: {ip}, Status: {status}")
+    return {"message": "Received successfully"}
+
+@app.get("/pi-status")
+async def get_status():
+    return pi_statuses
+# ======================
+# MQTT 룸 정보 수신 및 저장
+# ======================
+def on_mqtt_connect(client, userdata, flags, rc):
+    print(f"[MQTT] Connected with result code {rc}")
+    if rc == 0:
+        client.subscribe(MQTT_TOPIC_ROOMS)
+        print(f"[MQTT] Subscribed to topic: {MQTT_TOPIC_ROOMS}")
+    else:
+        print("[MQTT] 연결 실패")
+
+
+def on_mqtt_message(client, userdata, msg):
+    global rooms_storage
+    try:
+        payload = msg.payload.decode("utf-8")
+        print(f"[MQTT] Message received on {msg.topic}: {payload}")
+
+        data = json.loads(payload)
+        rooms = data.get("rooms")
+
+        if isinstance(rooms, list):
+            rooms_storage = rooms
+            print(f"[MQTT] rooms_storage updated: {rooms_storage}")
+        else:
+            print("[MQTT] Invalid rooms format (must be list)")
+
+    except Exception as e:
+        print("[MQTT] Error handling message:", e)
+
+def start_mqtt_client():
+    global mqtt_client
+    print("[MQTT] Starting MQTT client...")
+
+    client = mqtt.Client(transport="websockets")
+
+    # Cloudflare WSS 설정
+    client.tls_set(
+        cert_reqs=ssl.CERT_NONE,
+        tls_version=ssl.PROTOCOL_TLSv1_2,
+    )
+    client.tls_insecure_set(True)
+
+    client.on_connect = on_mqtt_connect
+    client.on_message = on_mqtt_message
+
+    # 필요하면 WebSocket path 설정 (브로커 설정에 따라)
+    # client.ws_set_options(path="/mqtt")
+
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    mqtt_client = client
+    client.loop_forever()
+
+
+@app.get("/rooms")
+async def get_rooms():
+    return {"status": "success", "rooms": rooms_storage}
+
